@@ -1,142 +1,95 @@
-from IPython.display import display, HTML, clear_output
-import ipywidgets as widgets
-from google.colab import files
 import cv2
-import numpy as np
+import os
 from ultralytics import YOLO
-import matplotlib.pyplot as plt
-import time
+import numpy as np
 
-model = YOLO('/content/runs/detect/train4/weights/best.pt')  
-model.overrides['conf'] = 0.5  
-model.overrides['iou'] = 0.45  
-model.overrides['agnostic_nms'] = True  
-model.overrides['max_det'] = 1000  
+# Replace with your camera's RTSP URL
+RTSP_URL = "rtsp://admin:[password]@[IP]:[port]/cam/realmonitor?channel=1&subtype=0"
 
-WEAPON_COLOR = (255, 0, 0)  
-TEXT_COLOR = (255, 255, 255)  
-BOX_THICKNESS = 2
-FONT_SCALE = 0.7
-FONT_THICKNESS = 2
+# Load your custom trained model
+path = r'C:\Users\Srour\Downloads\best (2).pt'
+model = YOLO(path)
+model.model.names = {0: 'knife', 1: 'gun', 2: 'shotgun', 3: 'riffle'}
 
+cap = cv2.VideoCapture(RTSP_URL)
 
-upload_btn = widgets.FileUpload(
-    accept='image/*',
-    multiple=False,
-    description='Upload Image'
-)
+if not cap.isOpened():
+    print("Error: Could not open RTSP stream.")
+    exit()
 
-detect_btn = widgets.Button(
-    description='Detect Weapons',
-    button_style='success'
-)
+fps = int(cap.get(cv2.CAP_PROP_FPS))
+width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-confidence_slider = widgets.FloatSlider(
-    value=0.5,
-    min=0.1,
-    max=0.9,
-    step=0.05,
-    description='Confidence:'
-)
+# Define colors for different classes
+colors = {
+    'knife': (0, 0, 255),      
+    'gun': (0, 165, 255),      
+    'shotgun': (0, 255, 255),  
+    'riffle': (0, 255, 0)      
+}
 
-performance_switch = widgets.ToggleButton(
-    value=False,
-    description='Show Performance Stats',
-    tooltip='Toggle performance metrics'
-)
-
-output = widgets.Output()
-
-def optimized_draw_boxes(image, boxes):
-    """Vectorized drawing for better performance"""
-    img = image.copy()
-    for box in boxes:
-        x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
-        conf = float(box.conf)
-        
-        
-        cv2.rectangle(img, (x1, y1), (x2, y2), WEAPON_COLOR, BOX_THICKNESS)
-        
-        
-        label = f"Weapon {conf:.2f}"
-        (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, FONT_THICKNESS)
-        
-        
-        cv2.rectangle(img, (x1, y1 - h - 10), (x1 + w, y1), WEAPON_COLOR, -1)
-        
-        
-        cv2.putText(img, label, (x1, y1 - 5), 
-                   cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
-    return img
-
-def on_detect_click(b):
-    with output:
-        clear_output()
-        
-        if not upload_btn.value:
-            print("⚠️ Please upload an image first")
-            return
+# Function to process detections and draw bounding boxes
+def process_detections(frame, results):
+    for result in results:
+        for box in result.boxes:
+            # Extract box coordinates
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            conf = float(box.conf[0])
+            cls_id = int(box.cls[0])
+            label = model.names[cls_id]
             
-        try:
+            color = colors.get(label, (255, 255, 255))  
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
             
-            start_time = time.time()
-            uploaded_file = next(iter(upload_btn.value.values()))
-            img = cv2.imdecode(np.frombuffer(uploaded_file['content'], np.uint8), cv2.IMREAD_COLOR)
-            load_time = time.time() - start_time
+            label_text = f"{label} {conf:.2f}"
             
-            
-            start_time = time.time()
-            results = model.predict(
-                img,
-                conf=confidence_slider.value,
-                imgsz=640,
-                augment=False,  
-                verbose=False  
+            (text_width, text_height), baseline = cv2.getTextSize(
+                label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2
             )
-            detect_time = time.time() - start_time
             
-            start_time = time.time()
-            annotated_img = optimized_draw_boxes(img, results[0].boxes)
-            process_time = time.time() - start_time
+            cv2.rectangle(
+                frame, 
+                (int(x1), int(y1) - text_height - baseline), 
+                (int(x1) + text_width, int(y1)), 
+                color, 
+                -1
+            )
             
-            display_img = cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB)
-            
-            plt.figure(figsize=(12, 8))
-            plt.imshow(display_img)
-            plt.axis('off')
-            plt.show()
-            
-            weapon_count = len(results[0].boxes)
-            print("🔴 Weapon Detection Results:")
-            print("-" * 40)
-            print(f"Detected weapons: {weapon_count}")
-            for i, box in enumerate(results[0].boxes, 1):
-                print(f"{i}. Confidence: {float(box.conf):.2f}")
-            
-            if weapon_count == 0:
-                print("No weapons detected (try lowering confidence threshold)")
-            
-            if performance_switch.value:
-                print("\n⚡ Performance Metrics:")
-                print(f"- Image load time: {load_time:.3f}s")
-                print(f"- Detection time: {detect_time:.3f}s")
-                print(f"- Drawing time: {process_time:.3f}s")
-                print(f"- Total processing time: {load_time+detect_time+process_time:.3f}s")
-                print(f"- FPS: {1/(detect_time+process_time):.1f}")
-            
-        except Exception as e:
-            print(f"❌ Error: {str(e)}")
+            # Put text
+            cv2.putText(
+                frame, 
+                label_text, 
+                (int(x1), int(y1) - baseline), 
+                cv2.FONT_HERSHEY_SIMPLEX, 
+                0.5, 
+                (0, 0, 0),  # Black text
+                2
+            )
+    
+    return frame
 
-detect_btn.on_click(on_detect_click)
+# Main loop
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("Error: Failed to grab frame.")
+        break
 
-display(HTML("""
-<h2 style='color: #d22;'>Optimized Weapon Detection</h2>
-<p>Upload an image to detect weapons (highlighted in <span style='color:red;'>red</span>)</p>
-"""))
-display(widgets.VBox([
-    confidence_slider,
-    performance_switch,
-    upload_btn, 
-    detect_btn
-]))
-display(output)
+    results = model.predict(
+        source=frame,   # Use the current frame
+        conf=0.5,       # Confidence threshold
+        verbose=False,  # Don't print results to console
+        device='cpu'    # Use 'cuda' if you have GPU
+    )
+    
+    frame_with_detections = process_detections(frame, results)
+    
+    cv2.imshow("Weapon Detection - RTSP Stream", frame_with_detections)
+
+    # Press 'q' to quit
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
